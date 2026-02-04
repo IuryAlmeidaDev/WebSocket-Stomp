@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Álbuns em Tempo Real (WebSocket/STOMP)</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <script src="https://unpkg.com/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+
+  <style>
+    .glass { backdrop-filter: blur(10px); background: rgba(255,255,255,0.06); }
+    .shadow-soft { box-shadow: 0 20px 60px rgba(0,0,0,0.35); }
+  </style>
+</head>
+
+<body class="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 text-zinc-100">
+  <div class="max-w-5xl mx-auto px-4 py-10">
+    <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between mb-8">
+      <div>
+        <h1 class="text-3xl md:text-4xl font-bold tracking-tight">
+          Notificações em Tempo Real
+        </h1>
+        <p class="text-zinc-300 mt-2">
+          Listener do <span class="font-semibold">/topic/new-album</span> via WebSocket + STOMP.
+          Quando você criar um álbum no back, isso aqui grita na hora.
+        </p>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <span id="statusDot" class="inline-block w-3 h-3 rounded-full bg-zinc-500"></span>
+        <span id="statusText" class="text-sm text-zinc-300">Desconectado</span>
+      </div>
+    </div>
+
+    <div class="glass shadow-soft rounded-2xl border border-white/10 overflow-hidden">
+      <div class="p-6 md:p-8">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="md:col-span-2">
+            <label class="text-sm text-zinc-300">WebSocket URL</label>
+            <input id="wsUrl" class="mt-2 w-full rounded-xl bg-zinc-950/50 border border-white/10 px-4 py-3 outline-none focus:ring-2 focus:ring-white/20"
+                   placeholder="ws://localhost:8080/ws-albuns" />
+            <p class="mt-2 text-xs text-zinc-400">
+              Dica: se o back estiver na mesma máquina, usa <span class="font-mono">ws://localhost:8080/ws-albuns</span>.
+              Se estiver em domínio https, normalmente é <span class="font-mono">wss://...</span>.
+            </p>
+          </div>
+
+          <div>
+            <label class="text-sm text-zinc-300">Tópico</label>
+            <input id="topic" class="mt-2 w-full rounded-xl bg-zinc-950/50 border border-white/10 px-4 py-3 outline-none focus:ring-2 focus:ring-white/20"
+                   placeholder="/topic/new-album" />
+            <p class="mt-2 text-xs text-zinc-400">
+              No seu back: <span class="font-mono">/topic/new-album</span>
+            </p>
+          </div>
+        </div>
+
+        <div class="mt-6 flex flex-col sm:flex-row gap-3">
+          <button id="btnConnect"
+                  class="rounded-xl bg-white text-zinc-950 font-semibold px-5 py-3 hover:bg-zinc-200 transition">
+            Conectar
+          </button>
+
+          <button id="btnDisconnect"
+                  class="rounded-xl bg-zinc-900/60 border border-white/10 px-5 py-3 hover:bg-zinc-900 transition disabled:opacity-40"
+                  disabled>
+            Desconectar
+          </button>
+
+          <button id="btnClear"
+                  class="rounded-xl bg-zinc-900/60 border border-white/10 px-5 py-3 hover:bg-zinc-900 transition">
+            Limpar eventos
+          </button>
+        </div>
+
+        <div class="mt-8">
+          <div class="flex items-center justify-between">
+            <h2 class="text-lg font-semibold">Eventos recebidos</h2>
+            <span id="counter" class="text-sm text-zinc-300">0</span>
+          </div>
+
+          <div id="events"
+               class="mt-3 max-h-[420px] overflow-auto rounded-2xl border border-white/10 bg-zinc-950/40">
+            <div class="p-6 text-zinc-400 text-sm">
+              Conecte e crie um álbum no back. Quando publicar em <span class="font-mono">/topic/new-album</span>,
+              vai aparecer aqui.
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-6 text-xs text-zinc-400">
+          Se não conectar: confirme que o back está rodando, que o endpoint é <span class="font-mono">/ws-albuns</span>
+          e que seu domínio foi liberado no CORS do back.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="fixed right-4 top-4 z-50 space-y-3"></div>
+
+  <script>
+    const wsUrlInput = document.getElementById('wsUrl');
+    const topicInput = document.getElementById('topic');
+
+    const guessWs = () => {
+      const isHttps = location.protocol === 'https:';
+      const proto = isHttps ? 'wss' : 'ws';
+      return `${proto}://${location.hostname}:8080/ws-albuns`;
+    };
+
+    wsUrlInput.value = guessWs();
+    topicInput.value = '/topic/new-album';
+
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const btnConnect = document.getElementById('btnConnect');
+    const btnDisconnect = document.getElementById('btnDisconnect');
+    const btnClear = document.getElementById('btnClear');
+    const eventsEl = document.getElementById('events');
+    const counterEl = document.getElementById('counter');
+    const toastsEl = document.getElementById('toasts');
+
+    let client = null;
+    let sub = null;
+    let count = 0;
+
+    const setStatus = (state) => {
+      const map = {
+        disconnected: { dot: 'bg-zinc-500', text: 'Desconectado' },
+        connecting:   { dot: 'bg-amber-400', text: 'Conectando...' },
+        connected:    { dot: 'bg-emerald-400', text: 'Conectado' },
+        error:        { dot: 'bg-red-400', text: 'Erro / reconectando...' }
+      };
+      const s = map[state] || map.disconnected;
+      statusDot.className = `inline-block w-3 h-3 rounded-full ${s.dot}`;
+      statusText.textContent = s.text;
+    };
+
+    const toast = (title, body) => {
+      const id = crypto.randomUUID();
+      const el = document.createElement('div');
+      el.className = 'glass shadow-soft border border-white/10 rounded-2xl p-4 w-[320px]';
+      el.innerHTML = `
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <div class="font-semibold">${escapeHtml(title)}</div>
+            <div class="text-sm text-zinc-300 mt-1">${escapeHtml(body)}</div>
+          </div>
+          <button class="text-zinc-300 hover:text-white" aria-label="Fechar">✕</button>
+        </div>
+      `;
+      el.querySelector('button').onclick = () => el.remove();
+      toastsEl.appendChild(el);
+      setTimeout(() => el.remove(), 4500);
+    };
+
+    const addEventCard = (payload) => {
+      if (count === 0) eventsEl.innerHTML = '';
+
+      count++;
+      counterEl.textContent = String(count);
+
+      const now = new Date();
+      const ts = now.toLocaleString('pt-BR');
+
+      const card = document.createElement('div');
+      card.className = 'p-4 border-b border-white/10 hover:bg-white/5 transition';
+      card.innerHTML = `
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">Novo álbum cadastrado</div>
+          <div class="text-xs text-zinc-400">${escapeHtml(ts)}</div>
+        </div>
+        <pre class="mt-2 text-sm text-zinc-200 whitespace-pre-wrap break-words bg-zinc-950/40 border border-white/10 rounded-xl p-3">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+      `;
+      eventsEl.prepend(card);
+    };
+
+    const escapeHtml = (str) => {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    };
+
+    const connect = () => {
+      const wsUrl = wsUrlInput.value.trim();
+      const topic = topicInput.value.trim();
+
+      if (!wsUrl || !topic) {
+        toast('Config faltando', 'Preencha o WebSocket URL e o Tópico.');
+        return;
+      }
+
+      setStatus('connecting');
+      btnConnect.disabled = true;
+
+      client = new StompJs.Client({
+        brokerURL: wsUrl,         
+        reconnectDelay: 2000,      
+        heartbeatIncoming: 10000,
+        heartbeatOutgoing: 10000,
+        debug: () => {}            
+      });
+
+      client.onConnect = () => {
+        setStatus('connected');
+        btnDisconnect.disabled = false;
+
+        sub = client.subscribe(topic, (message) => {
+          let payload = message.body;
+          try { payload = JSON.parse(message.body); } catch (_) {}
+          addEventCard(payload);
+
+          const t = (payload && payload.titulo) ? payload.titulo : 'Evento recebido';
+          const y = (payload && payload.anoLancamento) ? `Ano: ${payload.anoLancamento}` : 'Chegou notificação do back';
+          toast(`🎵 ${t}`, y);
+        });
+
+        toast('Conectado', `Inscrito em ${topic}`);
+      };
+
+      client.onStompError = (frame) => {
+        setStatus('error');
+        toast('STOMP error', frame.headers?.message || 'Erro STOMP');
+      };
+
+      client.onWebSocketError = () => {
+        setStatus('error');
+        toast('WebSocket', 'Falha na conexão WebSocket (confira URL e CORS).');
+      };
+
+      client.onDisconnect = () => {
+        setStatus('disconnected');
+        btnConnect.disabled = false;
+        btnDisconnect.disabled = true;
+      };
+
+      client.activate();
+    };
+
+    const disconnect = () => {
+      try {
+        if (sub) { sub.unsubscribe(); sub = null; }
+        if (client) client.deactivate();
+      } finally {
+        client = null;
+        btnConnect.disabled = false;
+        btnDisconnect.disabled = true;
+        setStatus('disconnected');
+        toast('Desconectado', 'Sessão encerrada.');
+      }
+    };
+
+    btnConnect.addEventListener('click', connect);
+    btnDisconnect.addEventListener('click', disconnect);
+    btnClear.addEventListener('click', () => {
+      count = 0;
+      counterEl.textContent = '0';
+      eventsEl.innerHTML = `
+        <div class="p-6 text-zinc-400 text-sm">
+          Limpou. Agora cria um álbum no back e observa a mágica acontecer.
+        </div>
+      `;
+      toast('Limpo', 'Lista de eventos zerada.');
+    });
+
+    setStatus('disconnected');
+  </script>
+</body>
+</html>
