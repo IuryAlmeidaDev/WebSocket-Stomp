@@ -20,12 +20,8 @@
     <div class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between mb-8">
       <div>
         <h1 class="text-3xl md:text-4xl font-bold tracking-tight">
-          Notificações em Tempo Real
+          Conectar ao WebSocket (Notificações em Tempo Real)
         </h1>
-        <p class="text-zinc-300 mt-2">
-          Listener do <span class="font-semibold">/topic/new-album</span> via WebSocket + STOMP.
-          Quando você criar um álbum no back, isso aqui grita na hora.
-        </p>
       </div>
 
       <div class="flex items-center gap-2">
@@ -41,19 +37,12 @@
             <label class="text-sm text-zinc-300">WebSocket URL</label>
             <input id="wsUrl" class="mt-2 w-full rounded-xl bg-zinc-950/50 border border-white/10 px-4 py-3 outline-none focus:ring-2 focus:ring-white/20"
                    placeholder="ws://localhost:8080/ws-albuns" />
-            <p class="mt-2 text-xs text-zinc-400">
-              Dica: se o back estiver na mesma máquina, usa <span class="font-mono">ws://localhost:8080/ws-albuns</span>.
-              Se estiver em domínio https, normalmente é <span class="font-mono">wss://...</span>.
-            </p>
           </div>
 
           <div>
             <label class="text-sm text-zinc-300">Tópico</label>
             <input id="topic" class="mt-2 w-full rounded-xl bg-zinc-950/50 border border-white/10 px-4 py-3 outline-none focus:ring-2 focus:ring-white/20"
                    placeholder="/topic/new-album" />
-            <p class="mt-2 text-xs text-zinc-400">
-              No seu back: <span class="font-mono">/topic/new-album</span>
-            </p>
           </div>
         </div>
 
